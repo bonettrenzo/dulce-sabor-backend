@@ -20,16 +20,18 @@ function crearAuthService({ usuarios, sesiones, secret }) {
       if (error) throw new HttpError(400, error);
 
       const usuario = usuarios.buscarPorEmail(datos.email.trim().toLowerCase());
-      
+
       const coincide = await bcrypt.compare(datos.password, usuario?.password_hash || hashFicticio);
       if (!usuario || !coincide || usuario.estado !== 'Activo') {
         throw new HttpError(401, 'Correo o contraseña incorrectos.');
       }
+
       const jti = randomUUID();
       const ahora = Math.floor(Date.now() / 1000);
       const token = jwt.sign({ iat: ahora }, secret, {
         ...OPCIONES_JWT, algorithm: 'HS256', subject: usuario.id, jwtid: jti, expiresIn: DURACION,
       });
+      
       sesiones.eliminarExpiradas(ahora);
       sesiones.crear({ id: jti, usuarioId: usuario.id, expira: ahora + DURACION });
       usuario.ultimo_acceso = new Date().toISOString();

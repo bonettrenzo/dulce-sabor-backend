@@ -2,7 +2,7 @@
   "name": "dulce-sabor-backend",
   "version": "1.0.0",
   "private": true,
-  "description": "API de Dulce Sabor: autenticaci\u00f3n",
+  "description": "API de Dulce Sabor: autenticación e inventario",
   "type": "commonjs",
   "main": "src/server.js",
   "engines": {
@@ -12,7 +12,8 @@
     "dev": "node --watch --env-file-if-exists=.env src/server.js",
     "start": "node --env-file-if-exists=.env src/server.js",
     "test": "node --test",
-    "crear-admin": "node --env-file-if-exists=.env src/scripts/crear-admin.js"
+    "crear-admin": "node --env-file-if-exists=.env src/scripts/crear-admin.js",
+    "seed:productos": "node --env-file-if-exists=.env src/scripts/seed-productos.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

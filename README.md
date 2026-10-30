@@ -1,6 +1,6 @@
 # Dulce Sabor — Backend
 
-Primera entrega: autenticación con Node.js, Express, SQLite, bcrypt y JWT.
+API con autenticación e inventario usando Node.js, Express, SQLite, bcrypt y JWT.
 El frontend se conectará en una entrega posterior.
 
 ## Preparación
@@ -97,70 +97,178 @@ Códigos: 400 datos inválidos, 401 sesión o credenciales inválidas, 403 permi
 insuficientes, 404 ruta inexistente, 409 correo duplicado, 413 cuerpo demasiado
 grande y 429 demasiados intentos.
 
+## Inventario
+
+Todas las rutas de inventario requieren un token de un **administrador activo**.
+Los cajeros reciben 403. El frontend aún usa sus datos locales; la conexión se hará
+por separado.
+
+### Cargar el catálogo inicial
+
+```bash
+npm run seed:productos
+```
+
+Carga los 18 productos de `src/data/productos.seed.json`, tomados del catálogo del
+frontend, conservando IDs, SKU, precios COP, mínimos y existencias. No sobrescribe
+productos existentes: se puede ejecutar de nuevo sin reiniciar el stock ni precios.
+Se ejecuta en una transacción. Las tablas se agregan al abrir la base, conservando
+usuarios y sesiones de la entrega de autenticación.
+
+Esta semilla establece el saldo inicial; no importa los movimientos ficticios del
+frontend ni crea ventas históricas. El historial comienza con las operaciones reales
+registradas por esta API. No hay una segunda copia del stock: inventario consulta
+la tabla `productos`, que compartirán los siguientes módulos.
+
+| Método | Ruta | Uso |
+| --- | --- | --- |
+| GET | `/api/inventario` | Existencias filtradas y paginadas. |
+| GET | `/api/inventario/resumen` | Indicadores globales. |
+| GET | `/api/inventario/alertas` | Productos agotados o con stock bajo. |
+| GET | `/api/inventario/opciones` | Categorías y motivos para los formularios. |
+| GET | `/api/inventario/movimientos` | Historial filtrado y paginado. |
+| POST | `/api/inventario/movimientos` | Registrar una entrada o ajuste. |
+| GET | `/api/inventario/:id` | Existencia de un producto. |
+
+### Consultar existencias
+
+```bash
+curl 'http://localhost:3000/api/inventario?categoria=Pan%20dulce&estado=bajo&pagina=1&porPagina=6' \
+  -H 'Authorization: Bearer <TOKEN_ADMIN>'
+```
+
+Filtros opcionales: `busqueda` (nombre o SKU), `categoria`, `estado`
+(`disponible`, `bajo`, `agotado` o `todos`), `pagina` y `porPagina`.
+`categoria=todas` no restringe la categoría. `porPagina` vale 6 por defecto y admite
+hasta 100. Una página mayor que el total se recorta a la última página.
+
+Respuesta de ejemplo:
+
+```json
+{
+  "ok": true,
+  "productos": [{
+    "id": "p13", "nombre": "Rol de canela", "sku": "PAN-003",
+    "categoria": "Pan dulce", "stock": 3, "minimo": 5,
+    "enPos": true, "estado": "bajo"
+  }],
+  "paginacion": {"pagina": 1, "porPagina": 6, "total": 1, "paginas": 1, "desde": 1, "hasta": 1}
+}
+```
+
+- `agotado`: stock igual a cero.
+- `bajo`: stock mayor que cero e igual o menor al mínimo.
+- `disponible`: stock mayor al mínimo.
+- `enPos`: el producto está activo en el catálogo; es independiente del estado de stock.
+
+`/resumen` devuelve `{ ok, resumen: { totalProductos, unidades, enAlerta, bajos,
+ agotados, disponibles } }`. Los indicadores son globales, sin depender de la página
+ni filtros del listado. `/alertas` devuelve `{ ok, alertas: [...] }` con los mismos
+campos de las existencias, ordenados por stock. `/opciones` devuelve `{ ok, categorias,
+ motivosEntrada, motivosAjuste }`.
+
+### Registrar entrada o ajuste
+
+```bash
+curl -X POST http://localhost:3000/api/inventario/movimientos \
+  -H 'Authorization: Bearer <TOKEN_ADMIN>' \
+  -H 'Content-Type: application/json' \
+  -d '{"productoId":"p13","tipo":"entrada","cantidad":12,"motivo":"Proveedor"}'
+```
+
+```bash
+curl -X POST http://localhost:3000/api/inventario/movimientos \
+  -H 'Authorization: Bearer <TOKEN_ADMIN>' \
+  -H 'Content-Type: application/json' \
+  -d '{"productoId":"p13","tipo":"ajuste","cantidad":2,"motivo":"Conteo físico"}'
+```
+
+La entrada **suma** unidades; el ajuste **fija el conteo físico final**, igual que
+en `registrarMovimiento` del frontend. Con stock 3, una entrada de 12 deja 15;
+un ajuste a 2 deja 2 y registra un cambio de -1 si el saldo anterior era 3.
+La cantidad debe ser un número entero JSON: entrada mayor a cero, ajuste igual o
+mayor a cero; el límite de stock es 2147483647. No se redondean cantidades inválidas.
+Un ajuste al mismo saldo se registra con cambio cero.
+
+El motivo debe corresponder al tipo y estar entre las opciones de `/opciones`.
+Las mermas del formulario actual se registran como ajuste con motivo de caducidad
+o daño. Las salidas por ventas se incorporarán con el módulo de ventas.
+
+La respuesta 201 es `{ ok: true, movimiento, producto }`; `producto` contiene la
+existencia actualizada y `movimiento` conserva:
+
+```json
+{
+  "id": "mov-1", "referencia": "MOV-0001", "productoId": "p13",
+  "producto": "Rol de canela", "sku": "PAN-003", "tipo": "entrada",
+  "cambio": 12, "saldo": 15, "stockAnterior": 3, "motivo": "Proveedor",
+  "responsableId": "<ID_ADMIN>", "responsable": "Administrador",
+  "fecha": "2026-10-29T15:00:00.000Z", "hora": "10:00"
+}
+```
+
+El responsable se toma de la sesión; los campos `responsable` o `responsableId`
+enviados por el cliente no sustituyen al usuario autenticado. Al conectar el frontend,
+ese campo del formulario debe mostrarse con el usuario actual.
+
+Stock e historial se guardan juntos dentro de `BEGIN IMMEDIATE` y se revierten juntos
+si falla la operación. Las referencias se generan con el ID autoincremental de SQLite.
+Los nombres de producto, SKU y responsable quedan conservados en el movimiento.
+No hay rutas para editar o eliminar movimientos; las correcciones se registran como
+nuevos ajustes.
+
+### Historial
+
+```bash
+curl 'http://localhost:3000/api/inventario/movimientos?productoId=p13&tipo=entrada&desde=2026-10-01&hasta=2026-10-29&pagina=1&porPagina=10' \
+  -H 'Authorization: Bearer <TOKEN_ADMIN>'
+```
+
+Filtros opcionales: `productoId`, `tipo`, `desde`, `hasta`, `pagina`, `porPagina`.
+Sin fechas devuelve los movimientos de hoy en **America/Bogota**; una sola fecha
+consulta ese día. Con ambas fechas incluye el rango completo. Usa `YYYY-MM-DD`.
+La respuesta incluye `{ ok, movimientos, paginacion, desde, hasta }` y se ordena del
+más reciente al más antiguo. `porPagina` vale 10 por defecto y admite hasta 100.
+Las fechas se guardan en UTC; `hora` y los límites de días se calculan para Colombia.
+
 ## Arquitectura
 
-API organizada por capas, siguiendo la separación de modelos y controladores de MVC.
-Las respuestas se entregan en JSON. Los servicios contienen las reglas de negocio.
+Se mantiene la separación por capas: **ruta → middleware → controlador → servicio → modelo → SQLite**.
 
 ```text
 src/
-  config/
-    env.js                       Variables de entorno y validación
-    database.js                  Conexión SQLite y creación de tablas
-  controllers/
-    auth.controller.js           Lee peticiones y construye respuestas HTTP
-  services/
-    auth.service.js              Login, JWT y ciclo de vida de sesiones
-    usuario.service.js           Creación de cajeros y administradores
-  models/
-    usuario.model.js             Consultas y persistencia de usuarios
-    sesion.model.js              Consultas y persistencia de sesiones
-  routes/
-    auth.routes.js               Endpoints y sus middlewares
-  middlewares/
-    auth.middleware.js           Autenticación y autorización por rol
-    auth-limiter.middleware.js   Límite de intentos de autenticación
-    error.middleware.js          Respuestas de error y rutas inexistentes
-  validators/
-    auth.validator.js            Validación de los datos de autenticación
-  utils/
-    http-error.js                Errores con estado HTTP
-  scripts/
-    crear-admin.js               Alta del administrador por consola
-  app.js                         Configura Express y conecta las capas
-  server.js                      Arranca y cierra el servidor
+  config/         Entorno, conexión y creación de tablas
+  constants/      Motivos de inventario y límite de existencias
+  controllers/    Respuestas JSON de autenticación e inventario
+  services/       Reglas de autenticación, usuarios e inventario
+  models/         SQL de usuarios, sesiones, productos, existencias y movimientos
+  routes/         Endpoints de autenticación e inventario
+  middlewares/    Autenticación, roles, límite de intentos y errores
+  validators/     Validación de autenticación y operaciones de inventario
+  utils/          Errores HTTP, transacciones, fechas y paginación
+  data/           Catálogo inicial de productos para desarrollo
+  scripts/        Creación de administrador y carga del catálogo
+  app.js          Configura Express y conecta las capas
+  server.js       Arranca y cierra el servidor
 test/
-  auth.test.js                   Pruebas HTTP y persistencia
+  auth.test.js
+  inventario.test.js
 ```
 
-Flujo de una petición: **ruta → middleware → controlador → servicio → modelo → SQLite**.
-El resultado regresa al controlador, que responde en JSON. Los errores llegan al
-middleware central de errores.
+Los controladores construyen las respuestas HTTP; los servicios aplican las reglas
+y coordinan las operaciones; los modelos concentran las consultas SQL. `app.js`
+conecta las dependencias y permite usar bases temporales en las pruebas.
+`autorizarRoles` está en `middlewares/auth.middleware.js`.
 
-- Las rutas declaran URLs, métodos HTTP y controles de acceso.
-- Los controladores usan `req` y `res`; delegan las operaciones en los servicios.
-- Los servicios aplican reglas de negocio y coordinan modelos, hashes y tokens.
-- Los modelos concentran el SQL y reciben la conexión a la base de datos.
-- Los middlewares validan la sesión, autorizan roles y unifican los errores.
-- Los validadores se reutilizan en los servicios y en el comando de administrador.
-
-`app.js` construye las dependencias por instancia. Las pruebas pueden usar su propia
-base sin iniciar `server.js`. El comando de administrador reutiliza el servicio de
-usuarios y su modelo, sin duplicar SQL ni lógica de contraseñas.
-
-Para agregar productos, inventario u otros módulos, sigue la misma separación:
-`routes`, `controllers`, `services` y `models`. `autorizarRoles` está disponible en
-`middlewares/auth.middleware.js` para proteger los próximos módulos administrativos.
-
-No se incluyen todavía productos, inventario, gestión de usuarios, recuperación
-de contraseña, renovación de tokens ni conexión del frontend.
+Quedan para próximas entregas el CRUD de productos, ventas, gestión de usuarios,
+recuperación de contraseña, renovación de tokens y conexión del frontend.
 
 ## Verificación y commit
 
 ```bash
 npm test
 git add .
-git commit -m "feat(auth): agregar autenticación con Express, SQLite y JWT"
+git commit -m "feat(inventario): agregar existencias, alertas y movimientos"
 ```
 
 Las pruebas usan una base en memoria o temporal; no alteran los datos de desarrollo.

@@ -8,6 +8,11 @@ const { crearAuthService } = require('./services/auth.service');
 const { crearAuthController } = require('./controllers/auth.controller');
 const { crearAutenticar } = require('./middlewares/auth.middleware');
 const { crearAuthRoutes } = require('./routes/auth.routes');
+const { crearInventarioModel } = require('./models/inventario.model');
+const { crearMovimientoModel } = require('./models/movimiento.model');
+const { crearInventarioService } = require('./services/inventario.service');
+const { crearInventarioController } = require('./controllers/inventario.controller');
+const { crearInventarioRoutes } = require('./routes/inventario.routes');
 const { rutaNoEncontrada, manejarError } = require('./middlewares/error.middleware');
 
 function crearApp({ db, secret, frontendUrl = 'http://localhost:5173' }) {
@@ -27,6 +32,11 @@ function crearApp({ db, secret, frontendUrl = 'http://localhost:5173' }) {
 
   app.get('/api/health', (req, res) => res.json({ ok: true }));
   app.use('/api/auth', crearAuthRoutes({ controller, autenticar }));
+  const inventario = crearInventarioModel(db);
+  const movimientos = crearMovimientoModel(db);
+  const inventarioService = crearInventarioService({ inventario, movimientos });
+  const inventarioController = crearInventarioController(inventarioService);
+  app.use('/api/inventario', crearInventarioRoutes({ controller: inventarioController, autenticar }));
   app.use(rutaNoEncontrada);
   app.use(manejarError);
   return app;
